@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { BUSINESS } from "@/lib/business";
 import { CATEGORIES } from "@/lib/types";
-import type { Booking, Category, Service, Slot } from "@/lib/types";
+import type { Booking, Category, Professional, Service, Slot } from "@/lib/types";
 
 function waLink(numero: string, mensaje: string) {
   const clean = numero.replace(/[^\d+]/g, "").replace(/^\+/, "");
@@ -16,7 +16,15 @@ function waLink(numero: string, mensaje: string) {
 
 type Tab = "turnos" | "servicios";
 
-export function AdminClient({ bookings, services }: { bookings: Booking[]; services: Service[] }) {
+export function AdminClient({
+  bookings,
+  services,
+  professionals,
+}: {
+  bookings: Booking[];
+  services: Service[];
+  professionals: Professional[];
+}) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("turnos");
 
@@ -50,7 +58,9 @@ export function AdminClient({ bookings, services }: { bookings: Booking[]; servi
       </nav>
 
       <main className="flex-1 px-4 pb-16 pt-4">
-        {tab === "turnos" && <BookingsTab bookings={bookings} onChanged={() => router.refresh()} />}
+        {tab === "turnos" && (
+          <BookingsTab bookings={bookings} professionals={professionals} onChanged={() => router.refresh()} />
+        )}
         {tab === "servicios" && <ServicesTab services={services} onChanged={() => router.refresh()} />}
       </main>
     </>
@@ -68,7 +78,15 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function BookingsTab({ bookings, onChanged }: { bookings: Booking[]; onChanged: () => void }) {
+function BookingsTab({
+  bookings,
+  professionals,
+  onChanged,
+}: {
+  bookings: Booking[];
+  professionals: Professional[];
+  onChanged: () => void;
+}) {
   const [reschedulingId, setReschedulingId] = useState<string | null>(null);
 
   async function cancelBooking(id: string) {
@@ -86,15 +104,6 @@ function BookingsTab({ bookings, onChanged }: { bookings: Booking[]; onChanged: 
   }
 
   const recent = [...bookings].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-  const byDate = new Map<string, Booking[]>();
-  for (const b of bookings) {
-    if (b.status !== "confirmado") continue;
-    if (!byDate.has(b.date)) byDate.set(b.date, []);
-    byDate.get(b.date)!.push(b);
-  }
-  const days = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b));
-  for (const [, items] of days) items.sort((a, b) => a.startTime.localeCompare(b.startTime));
 
   const cardProps = {
     reschedulingId,
@@ -119,22 +128,160 @@ function BookingsTab({ bookings, onChanged }: { bookings: Booking[]; onChanged: 
 
       <section>
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-faint">Calendario</h2>
-        {days.length === 0 && <p className="text-sm text-ink-faint">No hay turnos confirmados próximos.</p>}
-        <div className="flex flex-col gap-5">
-          {days.map(([date, items]) => (
-            <div key={date}>
-              <p className="mb-2 font-display text-sm font-semibold capitalize text-ink">
-                {format(new Date(`${date}T00:00:00`), "EEEE d 'de' MMMM", { locale: es })}
-              </p>
-              <div className="flex flex-col gap-3">
-                {items.map((b) => (
-                  <BookingCard key={b.id} booking={b} {...cardProps} />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <DayGridCalendar bookings={bookings} professionals={professionals} {...cardProps} />
       </section>
+    </div>
+  );
+}
+
+const DAY_COLORS = [
+  { bg: "bg-rose-soft", border: "border-rose", text: "text-rose-dark" },
+  { bg: "bg-gold-soft", border: "border-gold", text: "text-ink" },
+  { bg: "bg-good/15", border: "border-good", text: "text-good" },
+  { bg: "bg-nude", border: "border-ink-faint", text: "text-ink-soft" },
+];
+
+function timeToMinutes(t: string) {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function addDaysISO(dateISO: string, delta: number) {
+  const d = new Date(`${dateISO}T00:00:00`);
+  d.setDate(d.getDate() + delta);
+  return format(d, "yyyy-MM-dd");
+}
+
+function DayGridCalendar({
+  bookings,
+  professionals,
+  reschedulingId,
+  onReschedule,
+  onCancel,
+  onRescheduleDone,
+}: {
+  bookings: Booking[];
+  professionals: Professional[];
+  reschedulingId: string | null;
+  onReschedule: (id: string) => void;
+  onCancel: (id: string) => void;
+  onRescheduleDone: () => void;
+}) {
+  const [viewDate, setViewDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const dayBookings = bookings.filter((b) => b.date === viewDate && b.status === "confirmado");
+
+  const columns: { id: string; name: string }[] = professionals.map((p) => ({ id: p.id, name: p.name }));
+  if (dayBookings.some((b) => b.professionalId === "any")) {
+    columns.push({ id: "any", name: "Cualquiera" });
+  }
+
+  const [openH, openM] = BUSINESS.hours.open.split(":").map(Number);
+  const [closeH] = BUSINESS.hours.close.split(":").map(Number);
+  const startMin = openH * 60 + openM;
+  const endMin = closeH * 60;
+  const pxPerMin = 1.3;
+  const gridHeight = (endMin - startMin) * pxPerMin;
+  const hours: number[] = [];
+  for (let h = openH; h <= closeH; h++) hours.push(h);
+
+  const selected = dayBookings.find((b) => b.id === selectedId);
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <button
+          onClick={() => setViewDate((d) => addDaysISO(d, -1))}
+          className="rounded-full bg-nude px-3 py-1.5 text-sm font-bold text-ink-soft"
+        >
+          ‹
+        </button>
+        <p className="font-display text-sm font-semibold capitalize text-ink">
+          {format(new Date(`${viewDate}T00:00:00`), "EEEE d 'de' MMMM", { locale: es })}
+        </p>
+        <button
+          onClick={() => setViewDate((d) => addDaysISO(d, 1))}
+          className="rounded-full bg-nude px-3 py-1.5 text-sm font-bold text-ink-soft"
+        >
+          ›
+        </button>
+      </div>
+
+      {columns.length === 0 ? (
+        <p className="text-sm text-ink-faint">No hay profesionales para mostrar.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
+          <div className="flex" style={{ minWidth: columns.length * 150 + 44 }}>
+            <div className="w-11 shrink-0 border-r border-line pt-7">
+              {hours.map((h) => (
+                <div
+                  key={h}
+                  style={{ height: 60 * pxPerMin }}
+                  className="-translate-y-2 pr-1.5 text-right text-[0.65rem] text-ink-faint"
+                >
+                  {h}:00
+                </div>
+              ))}
+            </div>
+            {columns.map((col, i) => {
+              const colBookings = dayBookings.filter((b) => b.professionalId === col.id);
+              const color = DAY_COLORS[i % DAY_COLORS.length];
+              return (
+                <div key={col.id} className="relative flex-1 border-r border-line last:border-r-0" style={{ minWidth: 150 }}>
+                  <p className="truncate border-b border-line bg-surface px-2 py-1.5 text-center text-xs font-bold text-ink-soft">
+                    {col.name}
+                  </p>
+                  <div className="relative" style={{ height: gridHeight }}>
+                    {hours.map((h) => (
+                      <div
+                        key={h}
+                        className="absolute inset-x-0 border-t border-line/60"
+                        style={{ top: (h * 60 - startMin) * pxPerMin }}
+                      />
+                    ))}
+                    {colBookings.map((b) => {
+                      const top = (timeToMinutes(b.startTime) - startMin) * pxPerMin;
+                      const height = Math.max((timeToMinutes(b.endTime) - timeToMinutes(b.startTime)) * pxPerMin, 26);
+                      return (
+                        <button
+                          key={b.id}
+                          onClick={() => setSelectedId(b.id)}
+                          className={`absolute inset-x-1 overflow-hidden rounded-lg border-l-4 ${color.bg} ${color.border} px-1.5 py-1 text-left`}
+                          style={{ top, height }}
+                        >
+                          <p className={`truncate text-[0.68rem] font-bold leading-tight ${color.text}`}>
+                            {b.startTime} {b.customerName}
+                          </p>
+                          <p className="truncate text-[0.63rem] leading-tight text-ink-soft">{b.serviceName}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div className="mt-3 rounded-2xl border border-line bg-surface p-4">
+          <BookingCard
+            booking={selected}
+            reschedulingId={reschedulingId}
+            onReschedule={onReschedule}
+            onCancel={onCancel}
+            onRescheduleDone={onRescheduleDone}
+          />
+          <button
+            onClick={() => setSelectedId(null)}
+            className="mt-2 text-xs font-semibold text-ink-faint underline underline-offset-2"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
     </div>
   );
 }
