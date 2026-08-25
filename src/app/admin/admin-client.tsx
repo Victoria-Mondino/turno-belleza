@@ -1,0 +1,401 @@
+"use client";
+
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
+import { useRouter } from "next/navigation";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { BUSINESS } from "@/lib/business";
+import { CATEGORIES } from "@/lib/types";
+import type { Booking, Category, Service, Slot } from "@/lib/types";
+
+function waLink(numero: string, mensaje: string) {
+  const clean = numero.replace(/[^\d+]/g, "").replace(/^\+/, "");
+  return `https://wa.me/${clean}?text=${encodeURIComponent(mensaje)}`;
+}
+
+type Tab = "turnos" | "servicios";
+
+export function AdminClient({ bookings, services }: { bookings: Booking[]; services: Service[] }) {
+  const router = useRouter();
+  const [tab, setTab] = useState<Tab>("turnos");
+
+  async function logout() {
+    await fetch("/api/admin/logout", { method: "POST" });
+    router.push("/");
+    router.refresh();
+  }
+
+  return (
+    <>
+      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-surface/95 px-4 py-3.5 backdrop-blur">
+        <h1 className="font-display text-lg font-semibold text-ink">Panel admin</h1>
+        <button onClick={logout} className="text-sm font-semibold text-ink-faint">
+          Salir
+        </button>
+      </header>
+
+      <nav className="flex gap-2 border-b border-line px-4 py-3">
+        <TabButton active={tab === "turnos"} onClick={() => setTab("turnos")}>
+          Turnos
+        </TabButton>
+        <TabButton active={tab === "servicios"} onClick={() => setTab("servicios")}>
+          Servicios
+        </TabButton>
+      </nav>
+
+      <main className="flex-1 px-4 pb-16 pt-4">
+        {tab === "turnos" && <BookingsTab bookings={bookings} onChanged={() => router.refresh()} />}
+        {tab === "servicios" && <ServicesTab services={services} onChanged={() => router.refresh()} />}
+      </main>
+    </>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full px-4 py-2 text-sm font-semibold ${active ? "bg-rose text-white" : "bg-nude text-ink-faint"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function BookingsTab({ bookings, onChanged }: { bookings: Booking[]; onChanged: () => void }) {
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null);
+
+  async function cancelBooking(id: string) {
+    if (!confirm("¿Cancelar este turno?")) return;
+    await fetch(`/api/bookings/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "cancelado" }),
+    });
+    onChanged();
+  }
+
+  if (bookings.length === 0) {
+    return <p className="py-10 text-center text-sm text-ink-faint">Todavía no hay turnos reservados.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {bookings.map((b) => (
+        <div key={b.id} className="rounded-2xl border border-line bg-surface p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-display text-base font-semibold capitalize text-ink">
+                {format(new Date(`${b.date}T00:00:00`), "EEE d MMM", { locale: es })} · {b.startTime}hs
+              </p>
+              <p className="mt-0.5 text-sm text-ink-soft">
+                {b.serviceName} · {b.professionalName}
+              </p>
+              <p className="mt-1 text-sm text-ink-faint">
+                {b.customerName} · {b.customerPhone}
+              </p>
+              {b.notes && <p className="mt-1 text-xs text-ink-faint">Notas: {b.notes}</p>}
+            </div>
+            <span
+              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${
+                b.status === "confirmado" ? "bg-good/15 text-good" : "bg-nude text-ink-faint"
+              }`}
+            >
+              {b.status}
+            </span>
+          </div>
+
+          {b.status === "confirmado" && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                href={waLink(
+                  b.customerPhone,
+                  `Hola ${b.customerName}! Te escribimos de ${BUSINESS.name} para confirmar tu turno de ${b.serviceName} el ${b.date} a las ${b.startTime}hs.`
+                )}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-full bg-good/15 px-3.5 py-1.5 text-xs font-bold text-good"
+              >
+                WhatsApp
+              </a>
+              <button
+                onClick={() => setReschedulingId(reschedulingId === b.id ? null : b.id)}
+                className="rounded-full bg-nude px-3.5 py-1.5 text-xs font-bold text-ink-soft"
+              >
+                Reprogramar
+              </button>
+              <button onClick={() => cancelBooking(b.id)} className="rounded-full bg-danger/10 px-3.5 py-1.5 text-xs font-bold text-danger">
+                Cancelar
+              </button>
+            </div>
+          )}
+
+          {reschedulingId === b.id && (
+            <RescheduleForm
+              booking={b}
+              onDone={() => {
+                setReschedulingId(null);
+                onChanged();
+              }}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RescheduleForm({ booking, onDone }: { booking: Booking; onDone: () => void }) {
+  const [date, setDate] = useState(booking.date);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadSlots(d: string) {
+    setLoading(true);
+    setError(null);
+    const res = await fetch(`/api/availability?serviceId=${booking.serviceId}&date=${d}`);
+    const data = await res.json();
+    setSlots(data);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadSlots(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function pick(time: string) {
+    setSaving(true);
+    setError(null);
+    const res = await fetch(`/api/bookings/${booking.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, startTime: time }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      setError("Ese horario no está disponible.");
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <div className="mt-3 rounded-xl bg-nude/60 p-3">
+      <input
+        type="date"
+        value={date}
+        min={format(new Date(), "yyyy-MM-dd")}
+        onChange={(e) => {
+          setDate(e.target.value);
+          loadSlots(e.target.value);
+        }}
+        className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none"
+      />
+      {loading && <p className="mt-2 text-xs text-ink-faint">Buscando horarios…</p>}
+      {!loading && (
+        <div className="mt-2 grid grid-cols-4 gap-1.5">
+          {slots.map((s) => (
+            <button
+              key={s.time}
+              disabled={!s.available || saving}
+              onClick={() => pick(s.time)}
+              className={`rounded-lg py-1.5 text-xs font-semibold ${
+                !s.available ? "bg-surface text-ink-faint/50 line-through" : "bg-surface text-ink hover:bg-rose hover:text-white"
+              }`}
+            >
+              {s.time}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && <p className="mt-2 text-xs font-medium text-danger">{error}</p>}
+    </div>
+  );
+}
+
+function ServicesTab({ services, onChanged }: { services: Service[]; onChanged: () => void }) {
+  const [adding, setAdding] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {services.map((s) => (
+        <ServiceRow key={s.id} service={s} onChanged={onChanged} />
+      ))}
+
+      {adding ? (
+        <NewServiceForm
+          onDone={() => {
+            setAdding(false);
+            onChanged();
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <button onClick={() => setAdding(true)} className="rounded-2xl border border-dashed border-line py-3 text-sm font-semibold text-ink-faint">
+          + Agregar servicio
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ServiceRow({ service, onChanged }: { service: Service; onChanged: () => void }) {
+  const [price, setPrice] = useState(String(service.price));
+  const [duration, setDuration] = useState(String(service.durationMin));
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    await fetch(`/api/services/${service.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ price: Number(price), durationMin: Number(duration) }),
+    });
+    setSaving(false);
+    onChanged();
+  }
+
+  async function toggleActive() {
+    await fetch(`/api/services/${service.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: !service.active }),
+    });
+    onChanged();
+  }
+
+  async function remove() {
+    if (!confirm(`¿Eliminar "${service.name}"?`)) return;
+    await fetch(`/api/services/${service.id}`, { method: "DELETE" });
+    onChanged();
+  }
+
+  return (
+    <div className={`rounded-2xl border border-line bg-surface p-4 ${!service.active ? "opacity-50" : ""}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[0.68rem] font-bold uppercase tracking-wide text-ink-faint">{service.category}</p>
+          <p className="font-display text-base font-semibold text-ink">
+            {service.icon} {service.name}
+          </p>
+        </div>
+        <button onClick={toggleActive} className="text-xs font-semibold text-ink-faint underline underline-offset-2">
+          {service.active ? "Ocultar" : "Activar"}
+        </button>
+      </div>
+
+      <div className="mt-3 flex gap-2">
+        <label className="flex-1">
+          <span className="mb-1 block text-xs text-ink-faint">Precio</span>
+          <input
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            className="w-full rounded-lg border border-line bg-bg px-2.5 py-1.5 text-sm outline-none"
+          />
+        </label>
+        <label className="flex-1">
+          <span className="mb-1 block text-xs text-ink-faint">Duración (min)</span>
+          <input
+            type="number"
+            value={duration}
+            onChange={(e) => setDuration(e.target.value)}
+            className="w-full rounded-lg border border-line bg-bg px-2.5 py-1.5 text-sm outline-none"
+          />
+        </label>
+      </div>
+
+      <div className="mt-3 flex gap-2">
+        <button onClick={save} disabled={saving} className="flex-1 rounded-full bg-rose py-2 text-xs font-bold text-white disabled:opacity-50">
+          Guardar
+        </button>
+        <button onClick={remove} className="rounded-full bg-danger/10 px-4 py-2 text-xs font-bold text-danger">
+          Eliminar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NewServiceForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const [category, setCategory] = useState<Category>(CATEGORIES[0]);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [durationMin, setDurationMin] = useState("30");
+  const [price, setPrice] = useState("0");
+  const [icon, setIcon] = useState("💅");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setSaving(true);
+    setError(null);
+    const res = await fetch("/api/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category, name, description, durationMin: Number(durationMin), price: Number(price), icon }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      setError("Revisá los datos del servicio.");
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <div className="rounded-2xl border border-line bg-surface p-4">
+      <div className="flex flex-col gap-2.5">
+        <select value={category} onChange={(e) => setCategory(e.target.value as Category)} className="rounded-lg border border-line bg-bg px-2.5 py-2 text-sm">
+          {CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Nombre del servicio"
+          className="rounded-lg border border-line bg-bg px-2.5 py-2 text-sm"
+        />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Descripción"
+          className="rounded-lg border border-line bg-bg px-2.5 py-2 text-sm"
+        />
+        <div className="flex gap-2">
+          <input value={icon} onChange={(e) => setIcon(e.target.value)} placeholder="Ícono" className="w-16 rounded-lg border border-line bg-bg px-2.5 py-2 text-sm" />
+          <input
+            type="number"
+            value={durationMin}
+            onChange={(e) => setDurationMin(e.target.value)}
+            placeholder="Min"
+            className="flex-1 rounded-lg border border-line bg-bg px-2.5 py-2 text-sm"
+          />
+          <input
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="Precio"
+            className="flex-1 rounded-lg border border-line bg-bg px-2.5 py-2 text-sm"
+          />
+        </div>
+        {error && <p className="text-xs font-medium text-danger">{error}</p>}
+        <div className="flex gap-2">
+          <button onClick={submit} disabled={saving || !name} className="flex-1 rounded-full bg-rose py-2 text-xs font-bold text-white disabled:opacity-50">
+            {saving ? "Guardando…" : "Guardar servicio"}
+          </button>
+          <button onClick={onCancel} className="rounded-full bg-nude px-4 py-2 text-xs font-bold text-ink-faint">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
