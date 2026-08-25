@@ -74,9 +74,9 @@ export function BookingFlow({ service, professionals }: { service: Service; prof
 
   function validateForm(): string | null {
     if (name.trim().length < 2) return "Ingresá tu nombre.";
-    const cleanPhone = phone.replace(/[^\d+]/g, "");
-    if (!/^\+\d{8,15}$/.test(cleanPhone)) {
-      return "Ingresá tu teléfono en formato internacional, ej: +54 9 11 1234-5678.";
+    const cleanPhone = phone.replace(/\D/g, "");
+    if (cleanPhone.length < 8 || cleanPhone.length > 13) {
+      return "Ingresá tu teléfono con característica y número, ej: 3491 538262.";
     }
     if (email && !/^\S+@\S+\.\S+$/.test(email)) return "El email no parece válido.";
     return null;
@@ -107,7 +107,7 @@ export function BookingFlow({ service, professionals }: { service: Service; prof
           date: dateISO,
           startTime: selectedTime,
           customerName: name.trim(),
-          customerPhone: phone.replace(/[^\d+]/g, ""),
+          customerPhone: `+549${phone.replace(/\D/g, "")}`,
           customerEmail: email.trim() || undefined,
           notes: notes.trim() || undefined,
         }),
@@ -378,11 +378,11 @@ function FormStep({
           className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-[0.95rem] outline-none focus:border-rose"
         />
       </Field>
-      <Field label="Teléfono (WhatsApp)" required hint="Formato internacional, ej: +54 9 11 1234-5678">
+      <Field label="Teléfono (WhatsApp)" required hint="Solo característica y número, sin +54">
         <input
           value={phone}
           onChange={(e) => onChange.phone(e.target.value)}
-          placeholder="+54 9 11 1234-5678"
+          placeholder="Ej: 3491 538262"
           inputMode="tel"
           className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-[0.95rem] outline-none focus:border-rose"
         />
@@ -446,7 +446,7 @@ function ConfirmStep({
       <SummaryRow label="Fecha" value={format(date, "EEEE d 'de' MMMM", { locale: es })} />
       <SummaryRow label="Hora" value={`${time} hs`} />
       <SummaryRow label="Nombre" value={name} />
-      <SummaryRow label="Teléfono" value={phone} />
+      <SummaryRow label="Teléfono" value={`+549 ${phone.replace(/\D/g, "")}`} />
       {error && <p className="mt-1 text-sm font-medium text-danger">{error}</p>}
     </div>
   );
@@ -483,21 +483,14 @@ function SuccessScreen({
           {service.name} el {format(date, "EEEE d 'de' MMMM", { locale: es })} a las {time}hs
         </p>
 
-        {notification && !notification.sent && (
-          <a
-            href={notification.fallback.client}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-8 flex w-full items-center justify-center gap-2 rounded-full bg-good py-4 font-semibold text-white"
-          >
-            Confirmar por WhatsApp
-          </a>
-        )}
         {notification?.sent && (
           <p className="mt-8 rounded-2xl bg-nude px-4 py-3 text-sm text-ink-soft">Te enviamos la confirmación por WhatsApp.</p>
         )}
 
-        <a href="/" className="mt-4 text-sm font-semibold text-ink-faint underline underline-offset-4">
+        <a
+          href="/"
+          className="mt-8 flex w-full items-center justify-center gap-2 rounded-full bg-rose py-4 font-semibold text-white"
+        >
           Volver al inicio
         </a>
       </main>

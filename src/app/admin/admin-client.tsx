@@ -20,6 +20,11 @@ export function AdminClient({ bookings, services }: { bookings: Booking[]; servi
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("turnos");
 
+  useEffect(() => {
+    const interval = setInterval(() => router.refresh(), 15000);
+    return () => clearInterval(interval);
+  }, [router]);
+
   async function logout() {
     await fetch("/api/admin/logout", { method: "POST" });
     router.push("/");
@@ -80,68 +85,123 @@ function BookingsTab({ bookings, onChanged }: { bookings: Booking[]; onChanged: 
     return <p className="py-10 text-center text-sm text-ink-faint">Todavía no hay turnos reservados.</p>;
   }
 
+  const recent = [...bookings].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  const byDate = new Map<string, Booking[]>();
+  for (const b of bookings) {
+    if (b.status !== "confirmado") continue;
+    if (!byDate.has(b.date)) byDate.set(b.date, []);
+    byDate.get(b.date)!.push(b);
+  }
+  const days = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b));
+  for (const [, items] of days) items.sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+  const cardProps = {
+    reschedulingId,
+    onReschedule: (id: string) => setReschedulingId(reschedulingId === id ? null : id),
+    onCancel: cancelBooking,
+    onRescheduleDone: () => {
+      setReschedulingId(null);
+      onChanged();
+    },
+  };
+
   return (
-    <div className="flex flex-col gap-3">
-      {bookings.map((b) => (
-        <div key={b.id} className="rounded-2xl border border-line bg-surface p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-display text-base font-semibold capitalize text-ink">
-                {format(new Date(`${b.date}T00:00:00`), "EEE d MMM", { locale: es })} · {b.startTime}hs
-              </p>
-              <p className="mt-0.5 text-sm text-ink-soft">
-                {b.serviceName} · {b.professionalName}
-              </p>
-              <p className="mt-1 text-sm text-ink-faint">
-                {b.customerName} · {b.customerPhone}
-              </p>
-              {b.notes && <p className="mt-1 text-xs text-ink-faint">Notas: {b.notes}</p>}
-            </div>
-            <span
-              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${
-                b.status === "confirmado" ? "bg-good/15 text-good" : "bg-nude text-ink-faint"
-              }`}
-            >
-              {b.status}
-            </span>
-          </div>
-
-          {b.status === "confirmado" && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <a
-                href={waLink(
-                  b.customerPhone,
-                  `Hola ${b.customerName}! Te escribimos de ${BUSINESS.name} para confirmar tu turno de ${b.serviceName} el ${b.date} a las ${b.startTime}hs.`
-                )}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-full bg-good/15 px-3.5 py-1.5 text-xs font-bold text-good"
-              >
-                WhatsApp
-              </a>
-              <button
-                onClick={() => setReschedulingId(reschedulingId === b.id ? null : b.id)}
-                className="rounded-full bg-nude px-3.5 py-1.5 text-xs font-bold text-ink-soft"
-              >
-                Reprogramar
-              </button>
-              <button onClick={() => cancelBooking(b.id)} className="rounded-full bg-danger/10 px-3.5 py-1.5 text-xs font-bold text-danger">
-                Cancelar
-              </button>
-            </div>
-          )}
-
-          {reschedulingId === b.id && (
-            <RescheduleForm
-              booking={b}
-              onDone={() => {
-                setReschedulingId(null);
-                onChanged();
-              }}
-            />
-          )}
+    <div className="grid gap-6 lg:grid-cols-2">
+      <section>
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-faint">Recientes primero</h2>
+        <div className="flex flex-col gap-3">
+          {recent.map((b) => (
+            <BookingCard key={b.id} booking={b} {...cardProps} />
+          ))}
         </div>
-      ))}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-faint">Calendario</h2>
+        {days.length === 0 && <p className="text-sm text-ink-faint">No hay turnos confirmados próximos.</p>}
+        <div className="flex flex-col gap-5">
+          {days.map(([date, items]) => (
+            <div key={date}>
+              <p className="mb-2 font-display text-sm font-semibold capitalize text-ink">
+                {format(new Date(`${date}T00:00:00`), "EEEE d 'de' MMMM", { locale: es })}
+              </p>
+              <div className="flex flex-col gap-3">
+                {items.map((b) => (
+                  <BookingCard key={b.id} booking={b} {...cardProps} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BookingCard({
+  booking: b,
+  reschedulingId,
+  onReschedule,
+  onCancel,
+  onRescheduleDone,
+}: {
+  booking: Booking;
+  reschedulingId: string | null;
+  onReschedule: (id: string) => void;
+  onCancel: (id: string) => void;
+  onRescheduleDone: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-line bg-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-display text-base font-semibold capitalize text-ink">
+            {format(new Date(`${b.date}T00:00:00`), "EEE d MMM", { locale: es })} · {b.startTime}hs
+          </p>
+          <p className="mt-0.5 text-sm text-ink-soft">
+            {b.serviceName} · {b.professionalName}
+          </p>
+          <p className="mt-1 text-sm text-ink-faint">
+            {b.customerName} · {b.customerPhone}
+          </p>
+          {b.notes && <p className="mt-1 text-xs text-ink-faint">Notas: {b.notes}</p>}
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${
+            b.status === "confirmado" ? "bg-good/15 text-good" : "bg-nude text-ink-faint"
+          }`}
+        >
+          {b.status}
+        </span>
+      </div>
+
+      {b.status === "confirmado" && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <a
+            href={waLink(
+              b.customerPhone,
+              `Hola ${b.customerName}! Te escribimos de ${BUSINESS.name} para confirmar tu turno de ${b.serviceName} el ${b.date} a las ${b.startTime}hs.`
+            )}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full bg-good/15 px-3.5 py-1.5 text-xs font-bold text-good"
+          >
+            WhatsApp
+          </a>
+          <button
+            onClick={() => onReschedule(b.id)}
+            className="rounded-full bg-nude px-3.5 py-1.5 text-xs font-bold text-ink-soft"
+          >
+            Reprogramar
+          </button>
+          <button onClick={() => onCancel(b.id)} className="rounded-full bg-danger/10 px-3.5 py-1.5 text-xs font-bold text-danger">
+            Cancelar
+          </button>
+        </div>
+      )}
+
+      {reschedulingId === b.id && <RescheduleForm booking={b} onDone={onRescheduleDone} />}
     </div>
   );
 }
