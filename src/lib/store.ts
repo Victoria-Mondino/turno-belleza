@@ -41,8 +41,9 @@ export async function listProfessionals(): Promise<Professional[]> {
 // ---------- Turnos ----------
 
 export async function listBookings(): Promise<Booking[]> {
-  const snap = await getDb().collection("bookings").orderBy("date").orderBy("startTime").get();
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Booking);
+  const snap = await getDb().collection("bookings").get();
+  const bookings = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Booking);
+  return bookings.sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`));
 }
 
 export async function listBookingsForDate(date: string): Promise<Booking[]> {

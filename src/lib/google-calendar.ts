@@ -6,11 +6,26 @@ export interface BusyRange {
   end: Date;
 }
 
+const BUSINESS_TIMEZONE = process.env.BUSINESS_TIMEZONE || "America/Argentina/Buenos_Aires";
+
+/** Offset como "-03:00" para la zona horaria del negocio en una fecha dada. */
+function getUtcOffset(dateISO: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(new Date(`${dateISO}T12:00:00Z`));
+  const raw = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT+0";
+  const match = raw.match(/GMT([+-])(\d+)(?::(\d+))?/);
+  if (!match) return "+00:00";
+  const [, sign, hh, mm] = match;
+  return `${sign}${hh.padStart(2, "0")}:${(mm ?? "00").padStart(2, "0")}`;
+}
+
 function getAuth() {
   const email = process.env.GOOGLE_CALENDAR_CLIENT_EMAIL;
   const key = process.env.GOOGLE_CALENDAR_PRIVATE_KEY?.replace(/\\n/g, "\n");
   if (!email || !key) return null;
-  return new google.auth.JWT(email, undefined, key, ["https://www.googleapis.com/auth/calendar"]);
+  return new google.auth.JWT({ email, key, scopes: ["https://www.googleapis.com/auth/calendar"] });
 }
 
 /** Sin credenciales configuradas todavía: no bloquea ningún horario. */
@@ -20,10 +35,11 @@ export async function getBusyRanges(dateISO: string): Promise<BusyRange[]> {
   if (!auth || !calendarId) return [];
 
   const calendar = google.calendar({ version: "v3", auth });
+  const offset = getUtcOffset(dateISO, BUSINESS_TIMEZONE);
   const res = await calendar.freebusy.query({
     requestBody: {
-      timeMin: `${dateISO}T00:00:00`,
-      timeMax: `${dateISO}T23:59:59`,
+      timeMin: `${dateISO}T00:00:00${offset}`,
+      timeMax: `${dateISO}T23:59:59${offset}`,
       items: [{ id: calendarId }],
     },
   });
@@ -40,7 +56,7 @@ export async function createCalendarEvent(booking: Booking): Promise<string | nu
   if (!auth || !calendarId) return null;
 
   const calendar = google.calendar({ version: "v3", auth });
-  const timeZone = process.env.BUSINESS_TIMEZONE || "America/Argentina/Buenos_Aires";
+  const timeZone = BUSINESS_TIMEZONE;
   const event = await calendar.events.insert({
     calendarId,
     requestBody: {
